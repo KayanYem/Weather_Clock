@@ -4,7 +4,58 @@
 #include <U8g2lib.h>
 #include "time.h"
 #include <ArduinoJson.h>
+#include <Adafruit_NeoPixel.h>
 
+/***************创建任务****************/
+/*
+* 初始化
+* 执行周期：0xffff
+* 优先度
+*/
+#define ProjInit_TASK_PRIO  1          // 任务优先级
+#define ProjInit_STK_SIZE   1024 * 3        // 任务堆栈大小 8 * 10字节
+TaskHandle_t ProjInit_TaskHandle = NULL; // 任务句柄
+void ProjInit(void *pvParameters);
+/*
+* 获取天气数据更新
+* 执行周期：6000ms
+* 优先度1
+*/
+#define WeatherUpdate_TASK_PRIO  1          // 任务优先级
+#define WeatherUpdate_STK_SIZE   1024 * 2        // 任务堆栈大小
+TaskHandle_t WeatherUpdate_TaskHandle = NULL; // 任务句柄
+void WeatherUpdate(void *pvParameters); //任务函数
+/*
+* LED时钟更新
+* 执行周期：100ms
+* 优先度1
+*/
+#define LEDclock_TASK_PRIO  1          // 任务优先级
+#define LEDclock_STK_SIZE   1024 * 2        // 任务堆栈大小
+TaskHandle_t LEDclock_TaskHandle = NULL; // 任务句柄
+void LEDclock(void *pvParameters); //任务函数
+/*
+* OLED更新
+* 执行周期：500ms
+* 优先度1
+*/
+#define OLEDupdate_TASK_PRIO  1        // 任务优先级
+#define OLEDupdate_STK_SIZE   1024 * 2        // 任务堆栈大小
+TaskHandle_t OLEDupdate_TaskHandle = NULL; // 任务句柄
+void OLEDupdate(void *pvParameters); //任务函数
+
+/*******ws2812 LED clock************/
+#define PIN_hour  32
+#define NUM_hour 12
+#define PIN_minute  33
+#define NUM_minute 24
+Adafruit_NeoPixel hour(NUM_hour, PIN_hour, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel minute(NUM_minute, PIN_minute, NEO_GRB + NEO_KHZ800);
+
+/**********OLED初始化************/
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/18, /* data=*/19);  // ESP32 Thing, HW I2C with pin remapping
+
+/**********Weather LOGO*************/
 const uint8_t qingtianbaitian[] PROGMEM = {
   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x01,0x00,0x00,0x80,0x01,0x00,
   0x00,0x80,0x01,0x00,0x00,0x80,0x01,0x00,0xC0,0x80,0x01,0x03,0xC0,0x81,0x81,0x03,
@@ -306,7 +357,7 @@ int count = 0;
 int update = 1;
 int code_int_temp = 0;
 
-/*获取天气*/
+/*********获取天气*********/
 String cityName;
 String weather;
 String code = "";
@@ -322,29 +373,26 @@ String reqRes = "/v3/weather/now.json?key=" + reqUserKey + +"&location=" + reqLo
 String httprequest = String("GET ") + reqRes + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Connection: close\r\n\r\n";
 //--------------------------------------------------------//
 
-/*获取网络时间*/
+/***********获取网络时间**************/
 const long gmtOffset_sec = 8 * 3600;
 const int daylightOffset_sec = 0;
 const char* ntpServer = "pool.ntp.org";
 struct tm timeinfo;
 
-/*WIFI*/
-//手机
+/**************WIFI*************/
+/*手机*/
 // const char* ssid     = "HUAWEI_STK_9ead";
 // const char* password = "13726386023";
-//电脑
+/*电脑*/
 // const char* ssid     = "YemKayan";
 // const char* password = "13726386023";
-
+/*HOME*/
 const char* ssid     = "TP-LINK_E179";
 const char* password = "RT13415515516";
 
-
 WiFiServer server(80);
 
-/*OLED*/
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/18, /* data=*/19);  // ESP32 Thing, HW I2C with pin remapping
-
+/******************链接WIFI*********************/
 void wifi_connect() {
   //提示信息
   Serial.print("Wifi connecting");
@@ -372,6 +420,7 @@ void wifi_connect() {
   delay(1000);
 }
 
+/***************访问网站******************/
 void httpRequest() {
   WiFiClient client;
   //1 连接服务器
@@ -391,6 +440,7 @@ void httpRequest() {
   client.stop();
 }
 
+/*************获取知心天气数据解析***************/
 void parseJson(WiFiClient client) {
   const size_t capacity = JSON_ARRAY_SIZE(1) + JSON_OBJECT_SIZE(1) + 2 * JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(6) + 230;
   DynamicJsonDocument doc(capacity);
@@ -419,252 +469,296 @@ void parseJson(WiFiClient client) {
   Serial.println(temperature);
 }
 
-void printLocalTime() {
-  u8g2.setFontDirection(0);
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
-    return;
+/****************************************
+* LED时钟更新
+* 执行周期：200ms
+* 优先度1
+*****************************************/
+void LEDclock(void *pvParameters){
+  while(true)
+  {
+    getLocalTime(&timeinfo);
+    Serial.println(&timeinfo, "%b %d %a %T");  // 格式化输出
+    
+    int tmhour = timeinfo.tm_hour % 12;
+    int tmmin = timeinfo.tm_min / 5;
+    int tmsec = timeinfo.tm_sec / 5;
+
+    hour.clear();
+    minute.clear();
+
+    if(timeinfo.tm_hour >= 5 && timeinfo.tm_hour < 18){
+      hour.setPixelColor(tmhour, hour.Color(255, 255, 255));
+    }
+    else{
+      hour.setPixelColor(tmhour, hour.Color(100, 100, 255));
+    }
+    minute.setPixelColor(tmmin*2, minute.Color(255, 255, 50));
+    minute.setPixelColor(tmsec*2+1, minute.Color(150, 50, 50));
+    hour.show();
+    minute.show();
+    vTaskDelay(200/portTICK_PERIOD_MS); //等待200ms
   }
-  Serial.println(&timeinfo, "%b %d %a %R");  // 格式化输出
 }
 
-void OLED_print() {
-  printLocalTime();
-  
-  if (update == 1) {
-    httpRequest();
-    update = 0;
-  }
-  
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_wqy12_t_gb2312);
-  
-  u8g2.setCursor(0, 12);
-  // u8g2.print(code_int_temp);
-  
-  switch(code_int)
+/****************************************
+* OLED更新
+* 执行周期：500ms
+* 优先度1
+*****************************************/
+void OLEDupdate(void *pvParameters) {
+  while(true)
   {
-    case(0):
-    case(1):
-      u8g2.drawXBMP(10, 3, 32, 32, qingtianbaitian);
-      u8g2.setCursor(14, 48);
-      u8g2.print("晴天");
-      break;    
-    case(3):
-    case(2):
-      u8g2.drawXBMP(10, 3, 32, 32, qingtianyewan);
-      u8g2.setCursor(14, 48);
-      u8g2.print("晴天");
-      break;    
-    case(4):
-      u8g2.drawXBMP(10, 3, 32, 32, yintian);
-      u8g2.setCursor(14, 48);
-      u8g2.print("多云");
-      break;    
-    case(5):
-      u8g2.drawXBMP(10, 3, 32, 32, duoyun);
-      u8g2.setCursor(2, 48);
-      u8g2.print("晴间多云");
-      break;
-    case(6):
-      u8g2.drawXBMP(10, 3, 32, 32, yejianduoyun);
-      u8g2.setCursor(2, 48);
-      u8g2.print("晴间多云");
-      break;
-    case(7):
-      u8g2.drawXBMP(10, 3, 32, 32, duoyun);
-      u8g2.setCursor(2, 48);
-      u8g2.print("大部多云");
-      break;
-    case(8):
-      u8g2.drawXBMP(10, 3, 32, 32, yejianduoyun);
-      u8g2.setCursor(2, 48);
-      u8g2.print("大部多云");
-      break;
-    case(9):
-      u8g2.drawXBMP(10, 3, 32, 32, duoyun);
-      u8g2.setCursor(14, 48);
-      u8g2.print("阴天");
-      break;
-    case(10):
-      u8g2.drawXBMP(10, 3, 32, 32, zhenyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("阵雨");
-      break;
-    case(11):
-      u8g2.drawXBMP(10, 3, 32, 32, leizhenyu);
-      u8g2.setCursor(8, 48);
-      u8g2.print("雷阵雨");
-      break;
-    case(12):
-      u8g2.drawXBMP(10, 3, 32, 32, leizhenyu);
-      u8g2.setCursor(0, 48);
-      u8g2.print("雷阵雨有冰雹");
-      break;  
-    case(13):
-      u8g2.drawXBMP(10, 3, 32, 32, xiaoyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("小雨");
-      break;  
-    case(14):
-      u8g2.drawXBMP(10, 3, 32, 32, zhongyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("中雨");
-      break;  
-      u8g2.drawXBMP(10, 3, 32, 32, zhongyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("中雨");
-      break;  
-    case(15):
-      u8g2.drawXBMP(10, 3, 32, 32, dayu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("大雨");
-      break;  
-    case(16):
-      u8g2.drawXBMP(10, 3, 32, 32, baoyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("暴雨");
-      break;  
-    case(17):
-      u8g2.drawXBMP(10, 3, 32, 32, baoyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("大暴雨");
-      break;  
-    case(18):
-      u8g2.drawXBMP(10, 3, 32, 32, baoyu);
-      u8g2.setCursor(2, 48);
-      u8g2.print("特大暴雨");
-      break;  
-    case(19):
-      u8g2.drawXBMP(10, 3, 32, 32, baoyu);
-      u8g2.setCursor(14, 48);
-      u8g2.print("冻雨");
-      break;  
-    case(20):
-      u8g2.drawXBMP(10, 3, 32, 32, yujiaxue);
-      u8g2.setCursor(8, 48);
-      u8g2.print("雨夹雪");
-      break;  
-    case(21):
-      u8g2.drawXBMP(10, 3, 32, 32, zhenxue);
-      u8g2.setCursor(14, 48);
-      u8g2.print("阵雪");
-      break;  
-    case(22):
-      u8g2.drawXBMP(10, 3, 32, 32, xiaoxue);
-      u8g2.setCursor(14, 48);
-      u8g2.print("小雪");
-      break;  
-    case(23):
-      u8g2.drawXBMP(10, 3, 32, 32, zhongxue);
-      u8g2.setCursor(14, 48);
-      u8g2.print("中雪");
-      break;  
-    case(24):
-      u8g2.drawXBMP(10, 3, 32, 32, daxue);
-      u8g2.setCursor(14, 48);
-      u8g2.print("大雪");
-      break;  
-    case(25):
-      u8g2.drawXBMP(10, 3, 32, 32, baoxue);
-      u8g2.setCursor(14, 48);
-      u8g2.print("暴雪");
-      break;  
-    case(26):
-      u8g2.drawXBMP(10, 3, 32, 32, yangsha);
-      u8g2.setCursor(14, 48);
-      u8g2.print("浮尘");
-      break;  
-    case(27):
-      u8g2.drawXBMP(10, 3, 32, 32, shachenbao);
-      u8g2.setCursor(8, 48);
-      u8g2.print("沙尘暴");
-      break;  
-    case(28):
-    case(29):
-      u8g2.drawXBMP(10, 3, 32, 32, shachenbao);
-      u8g2.setCursor(2, 48);
-      u8g2.print("强沙尘暴");
-      break;  
-    case(30):
-      u8g2.drawXBMP(10, 3, 32, 32, wu);
-      u8g2.setCursor(20, 48);
-      u8g2.print("雾");
-      break;  
-    case(31):
-      u8g2.drawXBMP(10, 3, 32, 32, wumai);
-      u8g2.setCursor(20, 48);
-      u8g2.print("霾");
-      break;  
-    case(32):
-    case(33):
-    case(34):
-    case(35):
-    case(36):
-    case(37):
-    case(38):
-    default:
-      u8g2.drawXBMP(10, 3, 32, 32, N_A);
-      u8g2.setCursor(16, 48);
-      u8g2.print("N_A");
-      break;
-  }
- 
-  //更新天气
-  u8g2.setCursor(0, 63);
-  u8g2.print(cityName);
-  u8g2.print(" ");
-  u8g2.print(temperature);
-  u8g2.print("℃");
-
-  //更新时间
-  u8g2.setCursor(72, 47);
-  u8g2.print(&timeinfo, "%b %d");
-  u8g2.setCursor(64, 63);
-  u8g2.print(&timeinfo, "%A");
-  u8g2.sendBuffer();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_wqy12_t_gb2312);
+    
+    switch(code_int)
+    {
+      case(0):
+      case(1):
+        u8g2.drawXBMP(10, 3, 32, 32, qingtianbaitian);
+        u8g2.setCursor(14, 48);
+        u8g2.print("晴天");
+        break;    
+      case(3):
+      case(2):
+        u8g2.drawXBMP(10, 3, 32, 32, qingtianyewan);
+        u8g2.setCursor(14, 48);
+        u8g2.print("晴天");
+        break;    
+      case(4):
+        u8g2.drawXBMP(10, 3, 32, 32, yintian);
+        u8g2.setCursor(14, 48);
+        u8g2.print("多云");
+        break;    
+      case(5):
+        u8g2.drawXBMP(10, 3, 32, 32, duoyun);
+        u8g2.setCursor(2, 48);
+        u8g2.print("晴间多云");
+        break;
+      case(6):
+        u8g2.drawXBMP(10, 3, 32, 32, yejianduoyun);
+        u8g2.setCursor(2, 48);
+        u8g2.print("晴间多云");
+        break;
+      case(7):
+        u8g2.drawXBMP(10, 3, 32, 32, duoyun);
+        u8g2.setCursor(2, 48);
+        u8g2.print("大部多云");
+        break;
+      case(8):
+        u8g2.drawXBMP(10, 3, 32, 32, yejianduoyun);
+        u8g2.setCursor(2, 48);
+        u8g2.print("大部多云");
+        break;
+      case(9):
+        u8g2.drawXBMP(10, 3, 32, 32, duoyun);
+        u8g2.setCursor(14, 48);
+        u8g2.print("阴天");
+        break;
+      case(10):
+        u8g2.drawXBMP(10, 3, 32, 32, zhenyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("阵雨");
+        break;
+      case(11):
+        u8g2.drawXBMP(10, 3, 32, 32, leizhenyu);
+        u8g2.setCursor(8, 48);
+        u8g2.print("雷阵雨");
+        break;
+      case(12):
+        u8g2.drawXBMP(10, 3, 32, 32, leizhenyu);
+        u8g2.setCursor(0, 48);
+        u8g2.print("雷阵雨有冰雹");
+        break;  
+      case(13):
+        u8g2.drawXBMP(10, 3, 32, 32, xiaoyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("小雨");
+        break;  
+      case(14):
+        u8g2.drawXBMP(10, 3, 32, 32, zhongyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("中雨");
+        break;  
+        u8g2.drawXBMP(10, 3, 32, 32, zhongyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("中雨");
+        break;  
+      case(15):
+        u8g2.drawXBMP(10, 3, 32, 32, dayu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("大雨");
+        break;  
+      case(16):
+        u8g2.drawXBMP(10, 3, 32, 32, baoyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("暴雨");
+        break;  
+      case(17):
+        u8g2.drawXBMP(10, 3, 32, 32, baoyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("大暴雨");
+        break;  
+      case(18):
+        u8g2.drawXBMP(10, 3, 32, 32, baoyu);
+        u8g2.setCursor(2, 48);
+        u8g2.print("特大暴雨");
+        break;  
+      case(19):
+        u8g2.drawXBMP(10, 3, 32, 32, baoyu);
+        u8g2.setCursor(14, 48);
+        u8g2.print("冻雨");
+        break;  
+      case(20):
+        u8g2.drawXBMP(10, 3, 32, 32, yujiaxue);
+        u8g2.setCursor(8, 48);
+        u8g2.print("雨夹雪");
+        break;  
+      case(21):
+        u8g2.drawXBMP(10, 3, 32, 32, zhenxue);
+        u8g2.setCursor(14, 48);
+        u8g2.print("阵雪");
+        break;  
+      case(22):
+        u8g2.drawXBMP(10, 3, 32, 32, xiaoxue);
+        u8g2.setCursor(14, 48);
+        u8g2.print("小雪");
+        break;  
+      case(23):
+        u8g2.drawXBMP(10, 3, 32, 32, zhongxue);
+        u8g2.setCursor(14, 48);
+        u8g2.print("中雪");
+        break;  
+      case(24):
+        u8g2.drawXBMP(10, 3, 32, 32, daxue);
+        u8g2.setCursor(14, 48);
+        u8g2.print("大雪");
+        break;  
+      case(25):
+        u8g2.drawXBMP(10, 3, 32, 32, baoxue);
+        u8g2.setCursor(14, 48);
+        u8g2.print("暴雪");
+        break;  
+      case(26):
+        u8g2.drawXBMP(10, 3, 32, 32, yangsha);
+        u8g2.setCursor(14, 48);
+        u8g2.print("浮尘");
+        break;  
+      case(27):
+        u8g2.drawXBMP(10, 3, 32, 32, shachenbao);
+        u8g2.setCursor(8, 48);
+        u8g2.print("沙尘暴");
+        break;  
+      case(28):
+      case(29):
+        u8g2.drawXBMP(10, 3, 32, 32, shachenbao);
+        u8g2.setCursor(2, 48);
+        u8g2.print("强沙尘暴");
+        break;  
+      case(30):
+        u8g2.drawXBMP(10, 3, 32, 32, wu);
+        u8g2.setCursor(20, 48);
+        u8g2.print("雾");
+        break;  
+      case(31):
+        u8g2.drawXBMP(10, 3, 32, 32, wumai);
+        u8g2.setCursor(20, 48);
+        u8g2.print("霾");
+        break;  
+      case(32):
+      case(33):
+      case(34):
+      case(35):
+      case(36):
+      case(37):
+      case(38):
+      default:
+        u8g2.drawXBMP(10, 3, 32, 32, N_A);
+        u8g2.setCursor(16, 48);
+        u8g2.print("N_A");
+        break;
+    }
   
-  u8g2.setFont(u8g2_font_logisoso18_tr);
-  u8g2.setCursor(63, 27);
-  u8g2.print(&timeinfo, "%R");
-  u8g2.sendBuffer();
+    //更新天气
+    u8g2.setCursor(0, 63);
+    u8g2.print(cityName);
+    u8g2.print(" ");
+    u8g2.print(temperature);
+    u8g2.print("℃");
+
+    //更新时间 时间已从ledclock获取
+    u8g2.setCursor(72, 47);
+    u8g2.print(&timeinfo, "%b %d");
+    u8g2.setCursor(64, 63);
+    u8g2.print(&timeinfo, "%A");
+    
+    u8g2.setFont(u8g2_font_logisoso18_tr);
+    u8g2.setCursor(63, 27);
+    u8g2.print(&timeinfo, "%R");
+    u8g2.sendBuffer();
+
+    Serial.println("OLED update");  // 格式化输出    
+    vTaskDelay(500/portTICK_PERIOD_MS); //等待500ms
+  }
+}
+
+/****************************************
+* 获取天气数据更新
+* 执行周期：13s
+* 优先度1
+*****************************************/
+void WeatherUpdate(void *pvParameters){
+  while(true)
+  {
+    httpRequest();
+    Serial.println("WeatherUpdate runing........");
+    vTaskDelay(1000*13/portTICK_PERIOD_MS); //等待13s
+  }
+}
+
+/****************************************
+* 初始化
+* 执行周期：0xffff
+* 优先度
+*****************************************/
+void ProjInit(void *pvParameters){
+  while(true){
+    //WS2812 init
+    hour.begin();
+    minute.begin();
+
+    //OLED init
+    u8g2.begin();
+    u8g2.enableUTF8Print();  // enable UTF8 support for the Arduino print() function
+    delay(10);
+
+    // WIFI连接
+    wifi_connect();
+
+    // 获取时间
+    // 从网络时间服务器上获取并设置时间
+    // 获取成功后芯片会使用RTC时钟保持时间的更新
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    
+    Serial.println("ready"); 
+    vTaskDelete(NULL);
+  }
 }
 
 void setup() {
-
   Serial.begin(115200);
 
-  u8g2.begin();
-  u8g2.enableUTF8Print();  // enable UTF8 support for the Arduino print() function
+  
+  // 创建任务
+  xTaskCreate(ProjInit, "ProjInit", ProjInit_STK_SIZE, NULL, ProjInit_TASK_PRIO, &ProjInit_TaskHandle);
+  vTaskDelay(1000*5/portTICK_PERIOD_MS); //等待6s
 
-  delay(10);
-
-  wifi_connect();
-
-  // 从网络时间服务器上获取并设置时间
-  // 获取成功后芯片会使用RTC时钟保持时间的更新
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_wqy12_t_gb2312);
-  u8g2.setCursor(0, 63);
-  u8g2.print("updating...");
-  u8g2.sendBuffer();
-
-  for (int i = 0; i < 7; i++) {
-    httpRequest();
-    delay(1000);
-  }
+  xTaskCreate(WeatherUpdate, "WeatherUpdate", WeatherUpdate_STK_SIZE, NULL, WeatherUpdate_TASK_PRIO, &WeatherUpdate_TaskHandle);
+  xTaskCreate(LEDclock, "LEDclock", LEDclock_STK_SIZE, NULL, LEDclock_TASK_PRIO, &LEDclock_TaskHandle); 
+  xTaskCreate(OLEDupdate, "OLEDupdate", OLEDupdate_STK_SIZE, NULL, OLEDupdate_TASK_PRIO, &OLEDupdate_TaskHandle);
 }
 
 void loop() {
-  OLED_print();
-  if (count == 60) {
-    update = 1;
-    count = 0;
-  }
-  count++;  
-  // code_int_temp++;
-  // if(code_int_temp >= 39)code_int_temp=0;
-  delay(15000);
+
 }
