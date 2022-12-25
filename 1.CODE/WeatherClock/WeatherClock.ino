@@ -47,10 +47,16 @@ void OLEDupdate(void *pvParameters); //任务函数
 /*******ws2812 LED clock************/
 #define PIN_hour  32
 #define NUM_hour 12
-#define PIN_minute  33
-#define NUM_minute 24
+#define PIN_minsec  33
+#define NUM_minsec 24
 Adafruit_NeoPixel hour(NUM_hour, PIN_hour, NEO_GRB + NEO_KHZ800);
-Adafruit_NeoPixel minute(NUM_minute, PIN_minute, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel minsec(NUM_minsec, PIN_minsec, NEO_GRB + NEO_KHZ800);
+
+struct rgb {
+    int r;
+    int g;
+    int b;
+};
 
 /**********OLED初始化************/
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE, /* clock=*/18, /* data=*/19);  // ESP32 Thing, HW I2C with pin remapping
@@ -480,12 +486,14 @@ void LEDclock(void *pvParameters){
     getLocalTime(&timeinfo);
     Serial.println(&timeinfo, "%b %d %a %T");  // 格式化输出
     
-    int tmhour = timeinfo.tm_hour % 12;
-    int tmmin = timeinfo.tm_min / 5;
-    int tmsec = timeinfo.tm_sec / 5;
+    int tmhour = timeinfo.tm_hour % 12;   // 12小时制
+    int tmmin = timeinfo.tm_min / 5;      // 60分钟分为12格
+    int tmsec = timeinfo.tm_sec / 5;      // 60秒分为12格
+    int sec_color = timeinfo.tm_sec % 5;  // 一格5分钟
+    rgb sec_rgb = {150,50,50};
 
     hour.clear();
-    minute.clear();
+    minsec.clear();
 
     if(timeinfo.tm_hour >= 5 && timeinfo.tm_hour < 18){
       hour.setPixelColor(tmhour, hour.Color(255, 255, 255));
@@ -493,10 +501,24 @@ void LEDclock(void *pvParameters){
     else{
       hour.setPixelColor(tmhour, hour.Color(100, 100, 255));
     }
-    minute.setPixelColor(tmmin*2, minute.Color(255, 255, 50));
-    minute.setPixelColor(tmsec*2+1, minute.Color(150, 50, 50));
+    
+    if(sec_color == 0){
+      minsec.setPixelColor( tmsec*2-2,  minsec.Color(0,0,0));    
+    }
+    if(sec_color < 3){
+      minsec.setPixelColor( tmsec*2-1,  minsec.Color((uint8_t)(sec_rgb.r*(0.5-0.2*sec_color)),  (uint8_t)(sec_rgb.g*(0.5-0.2*sec_color)),   (uint8_t)(sec_rgb.b*(0.5-0.2*sec_color))));    
+    }    
+    else{
+      minsec.setPixelColor( tmsec*2-1,  minsec.Color(0,0,0));
+      minsec.setPixelColor( tmsec*2+3,  minsec.Color((uint8_t)(sec_rgb.r*(0.2*sec_color-0.5)),  (uint8_t)(sec_rgb.g*(0.2*sec_color-0.5)),   (uint8_t)(sec_rgb.b*(0.2*sec_color-0.5))));      
+    }
+    minsec.setPixelColor( tmsec*2,      minsec.Color((uint8_t)(sec_rgb.r*(1-0.2*sec_color)),    (uint8_t)(sec_rgb.g*(1-0.2*sec_color)),     (uint8_t)(sec_rgb.b*(1-0.2*sec_color))));
+    minsec.setPixelColor( tmsec*2+1,    minsec.Color((uint8_t)(sec_rgb.r*(0.5+0.2*sec_color)),  (uint8_t)(sec_rgb.g*(0.5+0.2*sec_color)),   (uint8_t)(sec_rgb.b*(0.5+0.2*sec_color))));
+    minsec.setPixelColor( (tmsec*2+2),  minsec.Color((uint8_t)(sec_rgb.r*(0.2*sec_color)),      (uint8_t)(sec_rgb.g*(0.2*sec_color)),       (uint8_t)(sec_rgb.b*(0.2*sec_color))));
+
+    minsec.setPixelColor(tmmin*2, minsec.Color(255, 255, 50));
     hour.show();
-    minute.show();
+    minsec.show();
     vTaskDelay(200/portTICK_PERIOD_MS); //等待200ms
   }
 }
@@ -726,7 +748,7 @@ void ProjInit(void *pvParameters){
   while(true){
     //WS2812 init
     hour.begin();
-    minute.begin();
+    minsec.begin();
 
     //OLED init
     u8g2.begin();
